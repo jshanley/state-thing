@@ -9,32 +9,14 @@ logger.setLevel(logging.DEBUG)
 class Machine:
     def __init__(self, mapping):
         self.mapping = mapping
-        self.reducers = {}
-        self.processors = {}
-        self.handlers = {}
+        self.state_handlers = {}
 
-    def add_reducer(self, fn, state_name, action_type):
-        self.reducers[(state_name, action_type)] = fn
+    def add_state_handler(self, fn, state_name):
+        self.state_handlers[state_name] = fn
 
-    def reducer(self, state_name, action_type):
-        def decorator(fn):
-            self.add_reducer(fn, state_name, action_type)
-        return decorator
-
-    def add_processor(self, fn, state_name):
-        self.processors[state_name] = fn
-
-    def processor(self, state_name):
-        def decorator(fn):
-            self.add_processor(fn, state_name)
-        return decorator
-
-    def add_handler(self, fn, state_name):
-        self.handlers[state_name] = fn
-
-    def handler(self, state_name):
+    def state_handler(self, state_name):
         def decorator(cls):
-            self.add_handler(cls, state_name)
+            self.add_state_handler(cls, state_name)
         return decorator
 
     def next_state(self, current_state, action_type):
@@ -84,6 +66,14 @@ class MachineInstance:
             'context': self.context,
         }
 
+    def _get_handler_instance(self, state_name):
+        try:
+            handler = self.machine.state_handlers[state_name]
+        except KeyError:
+            return None
+        else:
+            return handler()
+
     async def invoke(self, action):
         print('MachineInstance.invoke')
 
@@ -101,21 +91,14 @@ class MachineInstance:
         if next_state is None:
             return
 
+        current_state_handler = self._get_handler_instance(self.current_state)
+        next_state_handler = self._get_handler_instance(next_state)
+
         print('next_state', next_state)
 
         # update context
-        try:
-            reducer = self.machine.reducers[(self.current_state, action_type)]
-        except KeyError:
-            print(f'key not found: self.machine.reducers[({self.current_state}, {action_type})]')
-            try:
-                handler = self.machine.handlers[self.current_state]
-            except KeyError:
-                pass
-            else:
-                self.context = handler.reduce(self.context, action)
-        else:
-            self.context = reducer(self.context, action)
+        if current_state_handler is not None:
+            self.context = current_state_handler.reduce(self.context, action)
 
         print('context updated')
         
@@ -128,17 +111,8 @@ class MachineInstance:
         await self._emit(self.get_state())
 
         # process new state
-        try:
-            processor = self.machine.processors[self.current_state]
-        except KeyError:
-            try:
-                processor = self.machine.handlers[self.current_state].process
-            except (KeyError, AttributeError):
-                pass
-            else:
-                await processor(self.context, self.invoke)
-        else:
-            await processor(self.context, self.invoke)
+        if next_state_handler is not None:
+            await next_state_handler.process(self.context, self.invoke)
 
     async def _emit(self, event):
         for listener in self.listeners:
@@ -153,5 +127,24 @@ class MachineInstance:
     def listener(self, fn):
         self.add_listener(fn)
         return fn
+
+class StateHandler(object):
+    async def process(self, context, send):
+        pass
+    
+    def reduce(self, context, action):
+        return context
+
+
+def update(context, partial_update):
+    """
+    Helper function for applying partial updates to a context
+    """
+    try:
+        context.update(partial_update)
+    except AttributeError:
+        return partial_update
+    else:
+        return context
 
 

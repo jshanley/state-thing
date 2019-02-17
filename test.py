@@ -7,7 +7,7 @@ from starlette.applications import Starlette
 from starlette.endpoints import WebSocketEndpoint
 import uvicorn
 
-from machine import Machine
+from machine import Machine, StateHandler, update
 
 m = Machine({
     '*': {
@@ -41,89 +41,81 @@ m = Machine({
     'fail': None,
 })
 
+@m.state_handler('initial')
+class InitialStateHandler(StateHandler):
+    def reduce(self, context, action):
+        if action['type'] == 'START':
+            return {
+                'start_time': int(time.time())
+            }
+        else:
+            return context
 
-def update(thing, partial_update):
-    try:
-        thing.update(partial_update)
-    except AttributeError:
-        return partial_update
-    else:
-        return thing
-    
+@m.state_handler('name_input')
+class NameInputStateHandler(StateHandler):
+    def reduce(self, context, action):
+        if action['type'] == 'NAME':
+            return update(context, {
+                'name': action.get('name')
+            })
+        else:
+            return context
 
-
-@m.reducer('initial', 'START')
-def start(context, action):
-    return {
-        'start_time': int(time.time())
-    }
-
-@m.reducer('name_input', 'NAME')
-def name(context, action):
-    return update(context, {
-        'name': action.get('name')
-    })
-
-@m.reducer('phone_number_input', 'PHONE_NUMBER')
-def phone_number(context, action):
-    return update(context, {
-        'phone_number': action.get('phone_number')
-    })
-
-@m.reducer('validate_name', 'VALID')
-def name_valid(context, action):
-    return update(context, {
-        'is_name_valid': True
-    })
-
-@m.reducer('validate_name', 'INVALID')
-def name_invalid(context, action):
-    return update(context, {
-        'is_name_valid': False
-    })
-
-@m.processor('validate_name')
-async def validate_name(context, send):
-    print('processing validate_name', context)
-    # super-awesome validation
-    if context.get('name') in ['John', 'Gus']:
-        await send({'type': 'VALID'})
-    else:
-        await send({'type': 'INVALID'})
+@m.state_handler('phone_number_input')
+class PhoneNumberInputStateHandler(StateHandler):
+    def reduce(self, context, action):
+        if action['type'] == 'PHONE_NUMBER':
+            return update(context, {
+                'phone_number': action.get('phone_number')
+            })
+        else:
+            return context
 
 
-class Handler(ABC):
-    @staticmethod
-    @abstractmethod
-    async def process(context, send):
-        pass
-    
-    @staticmethod
-    @abstractmethod
-    def reduce(context, action):
-        return context
+@m.state_handler('validate_name')
+class ValidateNameStateHandler(StateHandler):
+    async def process(self, context, send):
+        # super-awesome validation
+        if context.get('name') in ['John', 'Gus']:
+            await send({'type': 'VALID'})
+        else:
+            await send({'type': 'INVALID'})
 
-@m.handler('validate_phone_number')
-class ValidatePhoneNumberHandler(Handler):
-    @staticmethod
-    async def process(context, send):
+    def reduce(self, context, action):
+        action_type = action['type']
+        if action_type == 'VALID':
+            return update(context, {
+                'is_name_valid': True
+            })
+        elif action_type == 'INVALID':
+            return update(context, {
+                'is_name_valid': False
+            })
+        else:
+            return context
+
+
+@m.state_handler('validate_phone_number')
+class ValidatePhoneNumberStateHandler(StateHandler):
+    async def process(self, context, send):
         phone_number = context.get('phone_number')
         if re.search(r'[0-9]{3}-[0-9]{4}', phone_number):
             await send({'type': 'VALID'})
         else:
             await send({'type': 'INVALID'})
-    @staticmethod
-    def reduce(context, action):
+
+    def reduce(self, context, action):
         action_type = action['type']
         if action_type == 'VALID':
             return update(context, {'is_phone_number_valid': True})
         elif action_type == 'INVALID':
             return update(context, {'is_phone_number_valid': False})
+        else:
+            return context
 
-@m.handler('save_record')
-class SaveRecordHandler(Handler):
-    @staticmethod
-    async def process(context, send):
+@m.state_handler('save_record')
+class SaveRecordHandler(StateHandler):
+    async def process(self, context, send):
         print('pretending to save the record to a database or something...')
         await asyncio.sleep(2)
         print('fake record saved')
